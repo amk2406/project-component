@@ -80,30 +80,9 @@ const processed = NodeUtility.process(data);
 console.log(processed);
 ```
 
-## 📚 Documentation
-
-Each component has its own detailed documentation. Check the [docs](./docs) directory for:
-
-- **[Getting Started](./docs/GETTING_STARTED.md)** - Step-by-step setup guide
-- **[API Reference](./docs/API.md)** - Complete component API documentation
-- **[Examples](./docs/EXAMPLES.md)** - Real-world usage examples
-- **[Contributing Guide](./CONTRIBUTING.md)** - How to contribute new components
-
 ## 🛠️ Available Components
 
-### Utils
-```javascript
-import { arrayUtil, stringUtil, objectUtil } from 'project-component';
-
-// Array utilities
-const unique = arrayUtil.unique([1, 2, 2, 3, 3, 3]);
-
-// String utilities
-const kebab = stringUtil.toKebabCase('hello world');
-
-// Object utilities
-const merged = objectUtil.deepMerge(obj1, obj2);
-```
+Comming soon 😅😆
 
 ### Validators
 ```javascript
@@ -112,18 +91,6 @@ import { validator } from 'project-component';
 validator.isEmail('user@example.com'); // true
 validator.isPhone('+1234567890');      // true
 validator.isUrl('https://example.com'); // true
-```
-
-### Middleware (Node.js)
-```javascript
-const express = require('express');
-const { middleware } = require('project-component');
-
-const app = express();
-
-app.use(middleware.errorHandler);
-app.use(middleware.logger);
-app.use(middleware.cors);
 ```
 
 ## 📖 Examples
@@ -151,67 +118,14 @@ cache.set('key', 'value');
 const value = cache.get('key'); // returns 'value'
 ```
 
-## 🔧 Configuration
-
-Create a `.componentrc.json` file in your project root:
-
-```json
-{
-  "cacheEnabled": true,
-  "logLevel": "info",
-  "timeout": 5000
-}
-```
-
-## 📂 Project Structure
-
-```
-project-component/
-├── src/
-│   ├── utils/
-│   ├── validators/
-│   ├── middleware/
-│   ├── components/
-│   └── index.js
-├── docs/
-│   ├── GETTING_STARTED.md
-│   ├── API.md
-│   └── EXAMPLES.md
-├── tests/
-│   └── *.test.js
-├── README.md
-├── CONTRIBUTING.md
-└── package.json
-```
-
-## 🧪 Testing
-
-Run the test suite:
-
-```bash
-npm test
-```
-
-Run tests with coverage:
-
-```bash
-npm run test:coverage
-```
-
-Run tests in watch mode:
-
-```bash
-npm run test:watch
-```
-
 ## 🤝 Contributing
 
-We welcome contributions! Please read our [Contributing Guide](./CONTRIBUTING.md) for details on:
+We welcome contributions! for details on:
 
 - How to submit issues
 - How to create pull requests
 - Code style and standards
-- Testing requirements
+- Testing requirement
 
 ### Steps to Contribute
 
@@ -228,11 +142,7 @@ Found a bug? Have a feature request? Please [open an issue](https://github.com/a
 - A clear title and description
 - Code examples or error messages
 - Expected vs actual behavior
-- Your environment (Node.js version, OS, etc.)
-
-## 📝 Changelog
-
-See [CHANGELOG.md](./CHANGELOG.md) for a list of changes in each release.
+- Your environment (Node.js version, OS, etc)
 
 ## 🔄 Versioning
 
@@ -250,34 +160,7 @@ MIT © 2026 amk2406
 
 ## 🙋 Support
 
-- **Documentation**: Check the [docs](./docs) folder
 - **Issues**: [GitHub Issues](https://github.com/amk2406/project-component/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/amk2406/project-component/discussions)
-
-## 🎓 Learning Resources
-
-- [JavaScript Best Practices](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide)
-- [Node.js Documentation](https://nodejs.org/docs/)
-- [NPM Package Guide](https://docs.npmjs.com/packages-and-modules)
-
-## 🚀 Roadmap
-
-- [ ] Add React component library
-- [ ] Add Vue component library
-- [ ] TypeScript definitions
-- [ ] Performance monitoring utilities
-- [ ] Database integration helpers
-- [ ] GraphQL utilities
-- [ ] Testing utilities and mocks
-- [ ] CLI tool for scaffolding
-
-## 💡 Tips
-
-- Start with the [Getting Started](./docs/GETTING_STARTED.md) guide
-- Check [Examples](./docs/EXAMPLES.md) for common use cases
-- Read [API Reference](./docs/API.md) for detailed component documentation
-- Join discussions for community support
-
 ---
 
 **Happy Coding! 🎉**
