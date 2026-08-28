@@ -1,14 +1,16 @@
+// tcp-socket-fixed.js
 const net = require('net');
 const { encode, decode } = require('@msgpack/msgpack');
 const EventEmitter = require('events');
 
 /**
  * Production-Ready TCP Socket Module
- * API mimics Socket.IO with automatic reconnection, heartbeats, and message queuing
+ * Fixed: No recursion, proper event handling, memory leak prevention
  */
-class TCPSocket extends EventEmitter {
+class TCPSocket {
   constructor(options = {}) {
-    super();
+    // Use internal event emitter instead of extending
+    this._events = new EventEmitter();
     
     // Configuration
     this.options = {
@@ -39,6 +41,7 @@ class TCPSocket extends EventEmitter {
     this.ackId = 0;
     this.ready = false;
     this.closed = false;
+    this._id = options.id || Date.now().toString(36);
   }
 
   // ========== PUBLIC API ==========
@@ -46,8 +49,11 @@ class TCPSocket extends EventEmitter {
   /**
    * Connect to server
    */
-  connect(host, port) {
-    if (this.connected || this.connecting) return Promise.resolve();
+  async connect(host, port) {
+    if (this.connected || this.connecting) {
+      this.log('Already connecting or connected');
+      return;
+    }
     
     return new Promise((resolve, reject) => {
       try {
@@ -79,7 +85,8 @@ class TCPSocket extends EventEmitter {
           // Send queued messages
           this.flushQueue();
           
-          this.emit('connect');
+          // Emit connect event using internal emitter
+          this._events.emit('connect');
           resolve();
         });
 
@@ -89,7 +96,7 @@ class TCPSocket extends EventEmitter {
 
         this.socket.on('error', (err) => {
           this.log('Socket error:', err.message);
-          this.emit('error', err);
+          this._events.emit('error', err);
           
           if (this.connecting) {
             reject(err);
@@ -109,7 +116,7 @@ class TCPSocket extends EventEmitter {
         }, 10000);
 
         // Clear timeout on connect
-        this.once('connect', () => clearTimeout(timeout));
+        this._events.once('connect', () => clearTimeout(timeout));
 
       } catch (err) {
         this.connecting = false;
@@ -120,10 +127,16 @@ class TCPSocket extends EventEmitter {
 
   /**
    * Emit event (like socket.emit)
+   * FIXED: No recursion with EventEmitter
    */
   emit(event, data, callback) {
     if (!event || typeof event !== 'string') {
       throw new Error('Event name must be a string');
+    }
+
+    // Check if this is a reserved event (should use internal emitter)
+    if (['connect', 'disconnect', 'error', 'reconnect', 'reconnect_failed'].includes(event)) {
+      throw new Error(`Cannot emit reserved event: ${event}`);
     }
 
     return new Promise((resolve, reject) => {
@@ -137,12 +150,15 @@ class TCPSocket extends EventEmitter {
 
       // Store ack callback if provided
       if (callback || message.ack) {
+        const timeoutId = setTimeout(() => {
+          this.ackCallbacks.delete(message.id);
+          reject(new Error(`Ack timeout for event: ${event}`));
+        }, this.options.messageTimeout);
+        
         this.ackCallbacks.set(message.id, {
           callback: callback || resolve,
-          timeout: setTimeout(() => {
-            this.ackCallbacks.delete(message.id);
-            reject(new Error(`Ack timeout for event: ${event}`));
-          }, this.options.messageTimeout)
+          timeout: timeoutId,
+          event: event
         });
       }
 
@@ -154,6 +170,7 @@ class TCPSocket extends EventEmitter {
 
   /**
    * Listen to event (like socket.on)
+   * FIXED: Uses internal EventEmitter
    */
   on(event, handler) {
     if (!event || typeof event !== 'string') {
@@ -163,6 +180,13 @@ class TCPSocket extends EventEmitter {
       throw new Error('Handler must be a function');
     }
 
+    // For internal events, use EventEmitter
+    if (['connect', 'disconnect', 'error', 'reconnect', 'reconnect_failed', 'heartbeat'].includes(event)) {
+      this._events.on(event, handler);
+      return this;
+    }
+
+    // For custom events, store in map
     if (!this.eventHandlers.has(event)) {
       this.eventHandlers.set(event, []);
     }
@@ -175,6 +199,11 @@ class TCPSocket extends EventEmitter {
    * Listen once (like socket.once)
    */
   once(event, handler) {
+    if (['connect', 'disconnect', 'error', 'reconnect', 'reconnect_failed', 'heartbeat'].includes(event)) {
+      this._events.once(event, handler);
+      return this;
+    }
+
     const wrapper = (...args) => {
       this.off(event, wrapper);
       handler(...args);
@@ -188,6 +217,17 @@ class TCPSocket extends EventEmitter {
   off(event, handler) {
     if (!event) {
       this.eventHandlers.clear();
+      this._events.removeAllListeners();
+      return this;
+    }
+
+    // For internal events
+    if (['connect', 'disconnect', 'error', 'reconnect', 'reconnect_failed', 'heartbeat'].includes(event)) {
+      if (handler) {
+        this._events.off(event, handler);
+      } else {
+        this._events.removeAllListeners(event);
+      }
       return this;
     }
 
@@ -207,6 +247,27 @@ class TCPSocket extends EventEmitter {
   }
 
   /**
+   * Listen to all events (like socket.onAny)
+   * NEW: Added for debugging
+   */
+  onAny(handler) {
+    if (typeof handler !== 'function') {
+      throw new Error('Handler must be a function');
+    }
+    this._events.on('any', handler);
+    return this;
+  }
+
+  offAny(handler) {
+    if (handler) {
+      this._events.off('any', handler);
+    } else {
+      this._events.removeAllListeners('any');
+    }
+    return this;
+  }
+
+  /**
    * Disconnect (like socket.disconnect)
    */
   disconnect() {
@@ -218,24 +279,34 @@ class TCPSocket extends EventEmitter {
     this.stopHeartbeat();
     this.clearReconnectTimer();
     
+    // Clear all ack callbacks to prevent memory leaks
+    for (const [id, ack] of this.ackCallbacks) {
+      clearTimeout(ack.timeout);
+    }
+    this.ackCallbacks.clear();
+    
+    // Clear message queue
+    this.messageQueue = [];
+    
     if (this.socket) {
+      // Remove all listeners to prevent memory leaks
+      this.socket.removeAllListeners();
       this.socket.destroy();
       this.socket = null;
     }
     
     this.buffer = Buffer.alloc(0);
-    this.messageQueue = [];
-    this.ackCallbacks.clear();
     
-    this.emit('disconnect');
+    this._events.emit('disconnect');
   }
 
   // ========== INTERNAL METHODS ==========
 
   send(message) {
-    if (!this.connected || !this.socket) {
+    if (!this.connected || !this.socket || this.socket.destroyed) {
       // Queue message for later
       this.messageQueue.push(message);
+      this.log('Queued message:', message.event || 'ack');
       return;
     }
 
@@ -244,11 +315,18 @@ class TCPSocket extends EventEmitter {
       const length = Buffer.alloc(4);
       length.writeUInt32LE(encoded.length, 0);
       
+      // Check if socket is writable
+      if (!this.socket.writable) {
+        this.messageQueue.push(message);
+        this.log('Socket not writable, queuing message');
+        return;
+      }
+      
       this.socket.write(Buffer.concat([length, encoded]));
       this.log('Sent:', message.event || 'ack');
     } catch (err) {
       this.log('Send error:', err.message);
-      this.emit('error', err);
+      this._events.emit('error', err);
       // Queue for retry
       this.messageQueue.push(message);
     }
@@ -270,13 +348,19 @@ class TCPSocket extends EventEmitter {
         this.handleMessage(message);
       } catch (err) {
         this.log('Parse error:', err.message);
-        this.emit('error', err);
+        this._events.emit('error', err);
       }
     }
   }
 
   handleMessage(message) {
-    if (!message.type) return;
+    if (!message || !message.type) {
+      this.log('Invalid message received');
+      return;
+    }
+
+    // Emit any event for debugging
+    this._events.emit('any', message);
 
     switch (message.type) {
       case 'event':
@@ -292,13 +376,19 @@ class TCPSocket extends EventEmitter {
         break;
         
       case 'error':
-        this.emit('error', new Error(message.data));
+        this._events.emit('error', new Error(message.data));
         break;
+        
+      default:
+        this.log('Unknown message type:', message.type);
     }
   }
 
   handleEvent(message) {
     const { event, data, id, ack } = message;
+    
+    // Emit internal event
+    this._events.emit('any_event', event, data);
     
     if (this.eventHandlers.has(event)) {
       const handlers = this.eventHandlers.get(event);
@@ -310,7 +400,7 @@ class TCPSocket extends EventEmitter {
           results.push(result);
         } catch (err) {
           this.log(`Handler error for ${event}:`, err.message);
-          this.emit('error', err);
+          this._events.emit('error', err);
         }
       }
       
@@ -322,14 +412,15 @@ class TCPSocket extends EventEmitter {
           data: results.length === 1 ? results[0] : results
         });
       }
-    } else if (event === 'ping') {
-      // Special ping event for latency testing
-      this.emit('ping', data);
-      this.send({
-        type: 'ack',
-        id: id,
-        data: { pong: Date.now() }
-      });
+    } else {
+      // No handler, send error acknowledgment if ack requested
+      if (ack) {
+        this.send({
+          type: 'ack',
+          id: id,
+          data: { error: `No handler for event: ${event}` }
+        });
+      }
     }
   }
 
@@ -340,38 +431,49 @@ class TCPSocket extends EventEmitter {
       this.ackCallbacks.delete(message.id);
       
       if (typeof ack.callback === 'function') {
-        ack.callback(message.data);
+        try {
+          ack.callback(message.data);
+        } catch (err) {
+          this.log('Ack callback error:', err.message);
+          this._events.emit('error', err);
+        }
       }
     }
   }
 
   handleHeartbeat(message) {
     // Respond to heartbeat
-    if (message.type === 'heartbeat') {
+    if (message.data && message.data.ping) {
       this.send({
         type: 'heartbeat',
-        data: { pong: Date.now() }
+        data: { pong: Date.now(), ping: message.data.ping }
       });
-      this.emit('heartbeat');
     }
     
     // Reset heartbeat timer on pong
     if (message.data && message.data.pong) {
-      this.emit('heartbeat');
+      this._events.emit('heartbeat');
     }
   }
 
   handleDisconnect() {
+    const wasConnected = this.connected;
     this.connected = false;
     this.ready = false;
     this.connecting = false;
     
     this.stopHeartbeat();
     
-    this.emit('disconnect');
+    // Clear pending acks
+    for (const [id, ack] of this.ackCallbacks) {
+      clearTimeout(ack.timeout);
+    }
+    this.ackCallbacks.clear();
+    
+    this._events.emit('disconnect');
     
     // Auto-reconnect
-    if (this.options.reconnect && !this.closed) {
+    if (this.options.reconnect && !this.closed && wasConnected) {
       this.scheduleReconnect();
     }
   }
@@ -382,7 +484,9 @@ class TCPSocket extends EventEmitter {
     this.stopHeartbeat();
     
     this.heartbeatTimer = setInterval(() => {
-      if (!this.connected) return;
+      if (!this.connected || !this.socket || this.socket.destroyed) {
+        return;
+      }
       
       // Send heartbeat
       this.send({
@@ -419,17 +523,20 @@ class TCPSocket extends EventEmitter {
     
     if (this.reconnectAttempts > this.options.maxReconnectAttempts) {
       this.log('Max reconnect attempts reached');
-      this.emit('reconnect_failed');
+      this._events.emit('reconnect_failed');
       return;
     }
     
-    const delay = this.options.reconnectInterval * Math.pow(1.5, this.reconnectAttempts - 1);
+    const delay = Math.min(
+      this.options.reconnectInterval * Math.pow(1.5, this.reconnectAttempts - 1),
+      30000 // Max 30 seconds
+    );
     this.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
     
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect().then(() => {
-        this.emit('reconnect', this.reconnectAttempts);
+        this._events.emit('reconnect', this.reconnectAttempts);
       }).catch(() => {
         this.scheduleReconnect();
       });
@@ -446,7 +553,7 @@ class TCPSocket extends EventEmitter {
   // ========== QUEUE MANAGEMENT ==========
 
   flushQueue() {
-    while (this.messageQueue.length > 0 && this.connected) {
+    while (this.messageQueue.length > 0 && this.connected && this.socket && this.socket.writable) {
       const message = this.messageQueue.shift();
       this.send(message);
     }
@@ -456,7 +563,7 @@ class TCPSocket extends EventEmitter {
 
   log(...args) {
     if (this.options.debug) {
-      console.log('[TCPSocket]', ...args);
+      console.log(`[TCPSocket ${this._id}]`, ...args);
     }
   }
 
@@ -472,6 +579,7 @@ class TCPSocket extends EventEmitter {
    */
   getStats() {
     return {
+      id: this._id,
       connected: this.connected,
       ready: this.ready,
       closed: this.closed,
@@ -479,17 +587,28 @@ class TCPSocket extends EventEmitter {
       queueLength: this.messageQueue.length,
       ackCount: this.ackCallbacks.size,
       eventCount: this.eventHandlers.size,
-      bufferSize: this.buffer.length
+      bufferSize: this.buffer.length,
+      options: {
+        host: this.options.host,
+        port: this.options.port,
+        reconnect: this.options.reconnect,
+        maxReconnectAttempts: this.options.maxReconnectAttempts
+      }
     };
+  }
+
+  /**
+   * Get client ID
+   */
+  get id() {
+    return this._id;
   }
 }
 
-// ========== SERVER SIDE ==========
+// ========== SERVER SIDE (Fixed) ==========
 
-class TCPServer extends EventEmitter {
+class TCPServer {
   constructor(options = {}) {
-    super();
-    
     this.options = {
       port: options.port || 3000,
       host: options.host || '0.0.0.0',
@@ -500,13 +619,14 @@ class TCPServer extends EventEmitter {
     
     this.server = null;
     this.clients = new Map();
+    this._events = new EventEmitter();
     this.clientId = 0;
   }
 
   /**
    * Start server
    */
-  listen(port, host) {
+  async listen(port, host) {
     return new Promise((resolve, reject) => {
       try {
         this.server = net.createServer((socket) => {
@@ -518,13 +638,13 @@ class TCPServer extends EventEmitter {
 
         this.server.listen(listenPort, listenHost, () => {
           this.log('Server listening on', `${listenHost}:${listenPort}`);
-          this.emit('listening');
+          this._events.emit('listening');
           resolve();
         });
 
         this.server.on('error', (err) => {
           this.log('Server error:', err.message);
-          this.emit('error', err);
+          this._events.emit('error', err);
           reject(err);
         });
 
@@ -539,47 +659,34 @@ class TCPServer extends EventEmitter {
     const client = new TCPSocket({
       ...this.options,
       reconnect: false,
-      debug: this.options.debug
+      debug: this.options.debug,
+      id: `client-${clientId}`
     });
     
+    // Replace socket with the connected one
     client.socket = socket;
     client.connected = true;
     client.ready = true;
-    client.id = clientId;
+    client._id = `client-${clientId}`;
     
     // Override socket handlers
     socket.on('data', (chunk) => client.handleData(chunk));
-    socket.on('error', (err) => client.emit('error', err));
+    socket.on('error', (err) => {
+      client._events.emit('error', err);
+    });
     socket.on('close', () => {
       client.connected = false;
       client.ready = false;
+      client.closed = true;
       this.clients.delete(clientId);
-      client.emit('disconnect');
-      this.emit('client_disconnect', client);
+      client._events.emit('disconnect');
+      this._events.emit('client_disconnect', client);
     });
     
-    // Add client methods
-    client.emit = function(event, data, callback) {
-      const message = {
-        type: 'event',
-        event: event,
-        data: data !== undefined ? data : null,
-        ack: !!callback,
-        id: client.ackId++
-      };
-      
-      if (callback) {
-        client.ackCallbacks.set(message.id, {
-          callback: callback,
-          timeout: setTimeout(() => {
-            client.ackCallbacks.delete(message.id);
-          }, client.options.messageTimeout)
-        });
-      }
-      
-      client.send(message);
-      return this;
-    };
+    // Store client
+    this.clients.set(clientId, client);
+    this._events.emit('client_connect', client);
+    this._events.emit('connection', client);
     
     // Send connect event to client
     client.send({
@@ -587,11 +694,6 @@ class TCPServer extends EventEmitter {
       event: 'connect',
       data: { clientId }
     });
-    
-    // Store client
-    this.clients.set(clientId, client);
-    this.emit('client_connect', client);
-    this.emit('connection', client);
     
     this.log('Client connected:', clientId);
   }
@@ -601,8 +703,10 @@ class TCPServer extends EventEmitter {
    */
   broadcast(event, data) {
     for (const [id, client] of this.clients) {
-      if (client.connected) {
-        client.emit(event, data);
+      if (client.connected && client.socket && !client.socket.destroyed) {
+        client.emit(event, data).catch(err => {
+          this.log(`Broadcast error to client ${id}:`, err.message);
+        });
       }
     }
   }
@@ -615,9 +719,16 @@ class TCPServer extends EventEmitter {
   }
 
   /**
+   * Get client by ID
+   */
+  getClient(id) {
+    return this.clients.get(id);
+  }
+
+  /**
    * Close server
    */
-  close() {
+  async close() {
     return new Promise((resolve) => {
       if (this.server) {
         // Disconnect all clients
@@ -628,13 +739,33 @@ class TCPServer extends EventEmitter {
         
         this.server.close(() => {
           this.log('Server closed');
-          this.emit('close');
+          this._events.emit('close');
           resolve();
         });
       } else {
         resolve();
       }
     });
+  }
+
+  // Event handlers
+  on(event, handler) {
+    this._events.on(event, handler);
+    return this;
+  }
+
+  once(event, handler) {
+    this._events.once(event, handler);
+    return this;
+  }
+
+  off(event, handler) {
+    if (handler) {
+      this._events.off(event, handler);
+    } else {
+      this._events.removeAllListeners(event);
+    }
+    return this;
   }
 
   log(...args) {
